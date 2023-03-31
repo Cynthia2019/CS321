@@ -1,0 +1,370 @@
+#lang plai
+
+(define eight-principles
+    (list
+     "Know your rights."
+     "Acknowledge your sources."
+     "Protect your work."
+     "Avoid suspicion."
+     "Do your own work."
+     "Never falsify a record or permit another person to do so."
+     "Never fabricate data, citations, or experimental results."
+     "Always tell the truth when discussing your work with your instructor."))
+
+(print-only-errors)
+
+#|
+<RFAE> = <num>
+       | {+ <RFAE> <RFAE>}
+       | {- <RFAE> <RFAE>}
+       | {fun {<id>} <RFAE>}
+       | {<RFAE> <RFAE>}           ;; function application
+       | <id>
+       | {struct {<id> <RFAE>}*}   ;; all fields must be distinct
+       | {get <RFAE> <id>}
+       | {set <RFAE> <id> <RFAE>}
+       | {seqn <RFAE> <RFAE>}
+|#
+
+(define-type RFAE
+  [num (n number?)]
+  [add (lhs RFAE?)
+       (rhs RFAE?)]
+  [sub (lhs RFAE?)
+       (rhs RFAE?)]
+  [id (name symbol?)]
+  [fun (param-name symbol?)
+       (body RFAE?)]
+  [app (fun-expr RFAE?)
+       (arg-expr RFAE?)]
+  [stru (init-expr (listof cons?))]
+  [setstru (rec-expr RFAE?)
+           (name symbol?)
+           (new-expr RFAE?)]
+  [getstru (rec-expr RFAE?)
+           (name symbol?)]
+  [seqn (expr1 RFAE?)
+        (expr2 RFAE?)])
+
+;;(define-type StruItem
+;;  [mtItem]
+;;  [aItem (name symbol?)
+;;         (expr RFAE?)])
+
+(define-type Store
+  [mtSto]
+  [rdEnd(address integer?)
+        (next Store?)]
+  [aSto (address integer?)
+        (name symbol?)
+        (value RFAE-Value?)
+        (rest Store?)])
+
+(define-type Value*Store
+  [v*s (v RFAE-Value?)
+       (s Store?)])
+
+(define-type RFAE-Value
+  [numV (n number?)]
+  [closureV (param-name symbol?)
+            (body RFAE?)
+            (ds DefSub?)]
+  [structV (address integer?)])
+
+(define-type DefSub
+  [mtSub]
+  [aSub  (name symbol?)
+         (value RFAE-Value?)
+         (rest DefSub?)])
+
+;; ----------------------------------------------------------------------
+
+;; parse : s-expression -> RFAE?
+(define (parse s-exp)
+  (cond [(number? s-exp)
+         (num s-exp)]
+        [(symbol? s-exp)
+         (id s-exp)]
+        [(list? s-exp)
+         (when (empty? s-exp)
+           (error 'parse "the empty list is not a valid RFAE"))
+         (case (first s-exp)
+           [(+)
+            (check-pieces s-exp "add" 3)
+            (add (parse (second s-exp))
+                 (parse (third s-exp)))]
+           [(-)
+            (check-pieces s-exp "sub" 3)
+            (sub (parse (second s-exp))
+                 (parse (third s-exp)))]
+           [(fun)
+            (check-pieces s-exp "fun" 3)
+            (check-pieces (second s-exp) "parameter list" 1)
+            (fun (first (second s-exp))
+                 (parse (third s-exp)))]
+           [(with) ; in lieu of a compiler
+            (check-pieces s-exp "with" 3)
+            (check-pieces (second s-exp) "with binding pair" 2)
+            (app (fun (first (second s-exp)) (parse (third s-exp)))
+                 (parse (second (second s-exp))))]
+           [(struct)
+            (stru (map (lambda(x)
+                         (check-pieces x "struct item" 2)
+                         (cons (first x) (parse (second x)))) (rest s-exp)))]
+           [(set)
+            (check-pieces s-exp "set" 4)
+            (setstru (parse (second s-exp))
+                     (third s-exp)
+                     (parse (fourth s-exp)))]
+           [(get)
+            (check-pieces s-exp "get" 3)
+            (getstru (parse (second s-exp))
+                     (third s-exp))]
+           [(seqn)
+            (check-pieces s-exp "seqn" 3)
+            (seqn (parse (second s-exp))
+                  (parse (third s-exp)))]
+           [else
+            (check-pieces s-exp "app" 2)
+            (app (parse (first s-exp))
+                 (parse (second s-exp)))])]
+        [else
+         (error 'parse "expected RFAE, got ~a" s-exp)]))
+
+(define (check-pieces s-exp expected n-pieces)
+  (unless (and (list? s-exp)
+               (= n-pieces (length s-exp)))
+    (error 'parse "expected ~a got ~a" expected s-exp)))
+
+;; ----------------------------------------------------------------------
+
+(test (parse '{struct {a 3} {b 4}})
+      (stru (list (cons 'a (num 3)) (cons 'b (num 4)))))
+
+(test (parse '{struct {z {get {struct {z 0}} y}}})
+      (stru (list (cons 'z (getstru (stru (list (cons 'z (num 0)))) 'y)))))
+
+;; ----------------------------------------------------------------------
+
+;; interp-test : s-expression -> RFAE-Value?
+(define (interp-expr s-exp)
+  (type-case Value*Store (interp s-exp (mtSub) (mtSto))
+    [v*s (v s)
+         (type-case RFAE-Value v
+           [numV (n) n]
+           [closureV (param-name body local-ds) 'function]
+           [structV (address) 'struct])]))
+
+(define (lookup-st-rd addr st)
+  (type-case Store st
+    [mtSto () (error 'lookup-st-rd "unknown field")]
+    [rdEnd (adr rest) (if (eq? addr adr)
+                          st
+                          (lookup-st-rd addr rest))]
+    [aSto (adr named-id val rest) (if (eq? addr adr)
+                                      st
+                                      (lookup-st-rd addr rest))]))
+
+(define (lookup-st-rd-field name st)
+  (type-case Store st
+    [mtSto () (error 'lookup-st-rd "unknown field")] ;can't reach here
+    [rdEnd (addr rest) (error 'lookup-st-rd-field "unknown field:\n~a" name)]
+    [aSto (addr named-id val rest)
+          (if (equal? name named-id)
+              val
+              (lookup-st-rd-field name rest))]))
+
+(define (lookup-st addr a-field st)
+  (lookup-st-rd-field a-field
+                      (lookup-st-rd addr st)))
+
+(define (store-top st)
+  (type-case Store st
+    [mtSto () 0]
+    [rdEnd (addr rest) addr]
+    [aSto (addr n v rst) addr]))
+
+(define (malloc st)
+  (type-case Store st
+    [mtSto () 1]
+    [rdEnd (addr rest) (+ 1 addr)]
+    [aSto (addr name val rest) (+ 1 addr)]))
+
+(define (struct-rd records ds st)
+  (if (empty? records)
+      (v*s (structV (store-top st)) st)
+      (let ([a-pair (first records)]
+            [rest-rds (rest records)])
+        (let ([named-id (car a-pair)]
+              [struct-expr (cdr a-pair)])
+          (type-case Value*Store (interp struct-expr ds st)
+            [v*s (val1 st2)
+                 (let ([new-addr (malloc st2)])
+                   (let ([st3 (aSto new-addr
+                                    named-id
+                                    val1
+                                    st2)])
+                     (struct-rd rest-rds ds st3)))])))))
+
+;; ----------------------------------------------------------------------
+
+;; interp : RFAE? DefSub? Store? -> Value*Store?
+(define (interp a-rfae ds st) ; NEW
+  (type-case RFAE a-rfae
+    [num (n) (v*s (numV n) st)]
+    [add (l r) (numop + l r ds st)]
+    [sub (l r) (numop - l r ds st)]
+    [id (name)
+        (v*s (lookup name ds)
+             st)]
+    [fun (param-name body)
+         (v*s (closureV param-name body ds)
+              st)]
+    [app (fun-expr arg-expr)
+         (interp-two fun-expr arg-expr ds st
+                     (lambda (fun-val arg-val st3)
+                       (type-case RFAE-Value fun-val
+                         [closureV (param-name body closed-ds)
+                                   (interp body
+                                           (aSub param-name arg-val closed-ds)
+                                           st3)]
+                         [else (error 'interp "expected function, got: ~a" fun-val)])))]
+    [stru (init-expr)
+          (struct-rd init-expr
+                     ds
+                     (rdEnd (malloc st) st))]
+    [getstru (struct-expr name)
+             (type-case Value*Store (interp struct-expr ds st)
+                [v*s (val1 st2) (type-case RFAE-Value val1
+                                  [structV (addr) (v*s (lookup-st addr name st2)
+                                                       st2)]
+                                  [else (error 'interp
+                                               "expected record:~a"
+                                               struct-expr)])])]
+    [setstru (struct-expr name new-expr)
+            (type-case Value*Store (interp struct-expr ds st)
+                [v*s (val1 st2)
+                     (type-case RFAE-Value val1
+                       [structV (addr) (type-case Value*Store (interp new-expr ds st2)
+                                         [v*s (val2 st3) (v*s (lookup-st addr name st3)
+                                                              (set-st addr name val2 st3))])]
+                       [else (error 'interp
+                                    "expected record"
+                                    struct-expr)])])]
+    [seqn (expr1 expr2)
+          (interp-two expr1 expr2 ds st
+                      (lambda (v1 v2 st3) (v*s v2 st3)))]))
+
+;; ----------------------------------------------------------------------
+
+(define (set-st-2 a-field new-val st)
+  (type-case Store st
+    [aSto (adr named-id val rest)
+          (if (symbol=? a-field named-id)
+              (aSto adr a-field new-val rest)
+              (aSto adr named-id val (set-st-2 a-field new-val rest)))]
+    [else (error 'set "unknown field")]))
+
+(define (set-st-1 rd-addr a-field new-val st)
+  (type-case Store st
+    [mtSto () (error 'set "unknown field")]
+    [rdEnd (adr rest)
+           (if (eq? rd-addr adr)
+               (error 'set "unknown field")
+               (rdEnd adr (set-st-1 rd-addr a-field new-val rest)))]
+    [aSto (adr named-id val rest)
+          (if (eq? rd-addr adr)
+              (set-st-2 a-field new-val st)
+              (aSto adr named-id val (set-st-1 rd-addr a-field new-val rest)))]))
+(define (set-st rd-addr a-field new-val st)
+  ;this function return a totally new ###Store###
+  ;this addr and val must exits
+  (set-st-1 rd-addr a-field new-val st))
+
+;; interp-two : RFAE? RFAE? DefSub? Store? (RFAE-Value? RFAE-Value? Store? -> Value*Store?) -> Value*Store?
+(define (interp-two expr1 expr2 ds st finish)
+  (type-case Value*Store (interp expr1 ds st)
+    [v*s (val1 st2)
+         (type-case Value*Store (interp expr2 ds st2)
+           [v*s (val2 st3)
+                (finish val1 val2 st3)])]))
+#|
+(define (malloc st)
+  (+ 1 (max-address st)))
+(define (max-address st)
+  (type-case Store st
+    [mtSto () 0]
+    [aSto (a val rest)
+          (max a (max-address rest))]))
+|#
+;; numop : (number? number? -> number?) RFAE? RFAE? DefSub? Store?
+;;    -> Value*Store?
+(define (numop op l r ds st)
+  (interp-two l r ds st
+              (lambda (l-val r-val st3)
+                (unless (numV? l-val)
+                  (error 'interp "expected number, got ~a" l-val))
+                (unless (numV? r-val)
+                  (error 'interp "expected number, got ~a" r-val))
+                (v*s (numV (op (numV-n l-val) (numV-n r-val)))
+                     st3))))
+#|
+(define (lookup-store address st)
+  (type-case Store st
+    [mtSto () (error 'interp "dangling pointer: ~a" address)]
+    [aSto (a val rest) (if (= address a)
+                           val
+                           (lookup-store address rest))]))
+|#
+;; lookup : symbol? DefSub? -> RFAE-Value?
+(define (lookup name ds)
+  (type-case DefSub ds
+    [mtSub () (error 'interp "free identifier")]
+    [aSub (name2 val rest)
+          (if (equal? name name2)
+              val
+              (lookup name rest))]))
+
+;; ----------------------------------------------------------------------
+
+(test/exn (interp-expr (parse '{struct {z {get {struct {z 0}} y}}}))
+          "unknown field")
+(test (interp-expr (parse '{get {struct {y {get {struct {z 0} {a 0}} z}}} y}))
+      0)
+(test/exn (interp-expr (parse '{get {struct {y {get {struct {z 0} {a 0}} z}}} z}))
+          "unknown field")
+(test/exn (interp-expr (parse '{get {struct {a 0} 
+                                      {b {struct {d 7} 
+                                           {e 50}}}} 
+                                    d}))
+          "unknown field") 
+(test (interp-expr (parse '{{fun {r}
+                                 {get r x}}
+                            {struct {x 1}}}))
+      1)
+(test (interp-expr (parse '{{fun {r}
+                                 {seqn
+                                  {set r x 5}
+                                  {get r x}}}
+                            {struct {x 1}}}))
+      5)
+(test (interp-expr (parse '{set {struct {x 42}} x 2}))
+      42)
+
+(test (interp-expr (parse '{{{{{fun {g}
+                                    {fun {s}
+
+                                         {fun {r1}
+                                              {fun {r2}
+                                                   {+ {get r1 b}
+                                                      {seqn
+                                                       {{s r1} {g r2}}
+                                                       {+ {seqn
+                                                           {{s r2} {g r1}}
+                                                           {get r1 b}}
+                                                          {get r2 b}}}}}}}}
+                               {fun {r} {get r a}}}            ; g
+                              {fun {r} {fun {v} {set r b v}}}} ; s
+                             {struct {a 0} {b 2}}}             ; r1
+                            {struct {a 3} {b 4}}}))            ; r2
+      5)

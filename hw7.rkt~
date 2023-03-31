@@ -1,0 +1,22 @@
+#lang plai
+
+  (define-type EFAE
+    [num (n number?)]
+    [add (lhs EFAE?)
+         (rhs EFAE?)]
+    [sub (lhs EFAE?)
+         (rhs EFAE?)]
+    [id (name symbol?)]
+    [fun (param symbol?)
+         (body EFAE?)]
+    [app (fun-expr EFAE?)
+         (arg-expr EFAE?)]
+    [if0 (tst EFAE?)
+         (thn EFAE?)
+         (els EFAE?)]
+    [throw (tag symbol?)
+           (throw-expr EFAE?)]
+    [try-catch (try-body EFAE?)
+               (tag symbol?)
+               (exn-name symbol?)
+               (catch-body EFAE?)])

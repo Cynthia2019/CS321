@@ -1,0 +1,1 @@
+("8.3" ta6osx ("2b79165c1bc1fdbc7a4d7b71f18a7ff978634a03" . "300a5f705f181c3d3e2403a5483e4dc3c87cdfef") (collects #"errortrace" #"errortrace-key.rkt") (collects #"plai" #"gc2" #"collector" #"lang" #"reader.rkt") (collects #"plai" #"gc2" #"collector.rkt") (collects #"scheme" #"main.rkt") (collects #"scheme" #"runtime-config.rkt"))

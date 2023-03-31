@@ -1,0 +1,9 @@
+#lang plai/gc2/mutator
+
+(allocator-setup "gc.rkt" 400)
+(define (count-down n)
+  (read-line)
+  (cond
+    [(zero? n) (count-down 20)]
+    [else (count-down (- n 1))]))
+(count-down 0)
